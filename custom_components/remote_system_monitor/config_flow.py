@@ -10,14 +10,20 @@ import voluptuous as vol
 from homeassistant import config_entries
 from homeassistant.core import callback
 from homeassistant.data_entry_flow import FlowResult
-import homeassistant.helpers.config_validation as cv
+from homeassistant.helpers.selector import (
+    NumberSelector,
+    NumberSelectorConfig,
+    NumberSelectorMode,
+    TextSelector,
+    TextSelectorConfig,
+    TextSelectorType,
+)
 
 from .const import (
     CONF_HOST,
     CONF_PASSWORD,
     CONF_PORT,
     CONF_SCAN_INTERVAL,
-    DEFAULT_NAME,
     DEFAULT_PORT,
     DEFAULT_SCAN_INTERVAL,
     DOMAIN,
@@ -37,7 +43,7 @@ def _test_connection_sync(host: str, port: int, password: str) -> tuple[str, str
         client.perform_handshake()
         if not client.authenticate(password):
             raise RSMAuthError("Invalid server password")
-        
+
         # Pull initial packet to read hardware name if possible
         client.request_update()
         snapshot = client.read_telemetry_packet()
@@ -65,9 +71,9 @@ class RSMConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
 
         if user_input is not None:
             host = user_input[CONF_HOST].strip()
-            port = user_input[CONF_PORT]
+            port = int(user_input[CONF_PORT])
             password = user_input[CONF_PASSWORD]
-            scan_interval = user_input.get(CONF_SCAN_INTERVAL, DEFAULT_SCAN_INTERVAL)
+            scan_interval = int(user_input.get(CONF_SCAN_INTERVAL, DEFAULT_SCAN_INTERVAL))
 
             try:
                 server_uid, comp_name = await self.hass.async_add_executor_job(
@@ -98,12 +104,26 @@ class RSMConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
 
         schema = vol.Schema(
             {
-                vol.Required(CONF_HOST, default="127.0.0.1"): str,
-                vol.Required(CONF_PORT, default=DEFAULT_PORT): cv.port,
-                vol.Required(CONF_PASSWORD): str,
+                vol.Required(CONF_HOST, default="127.0.0.1"): TextSelector(
+                    TextSelectorConfig(type=TextSelectorType.TEXT)
+                ),
+                vol.Required(CONF_PORT, default=DEFAULT_PORT): NumberSelector(
+                    NumberSelectorConfig(min=1, max=65535, step=1, mode=NumberSelectorMode.BOX)
+                ),
+                vol.Required(CONF_PASSWORD): TextSelector(
+                    TextSelectorConfig(type=TextSelectorType.PASSWORD)
+                ),
                 vol.Optional(
                     CONF_SCAN_INTERVAL, default=DEFAULT_SCAN_INTERVAL
-                ): vol.All(vol.Coerce(int), vol.Range(min=MIN_SCAN_INTERVAL, max=MAX_SCAN_INTERVAL)),
+                ): NumberSelector(
+                    NumberSelectorConfig(
+                        min=MIN_SCAN_INTERVAL,
+                        max=MAX_SCAN_INTERVAL,
+                        step=1,
+                        unit_of_measurement="seconds",
+                        mode=NumberSelectorMode.BOX,
+                    )
+                ),
             }
         )
 
@@ -125,27 +145,47 @@ class RSMConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
 class RSMOptionsFlowHandler(config_entries.OptionsFlow):
     """Handle options flow to update polling interval and connection options."""
 
-    def __init__(self, config_entry: config_entries.ConfigEntry) -> None:
+    def __init__(self, config_entry: config_entries.ConfigEntry | None = None) -> None:
         """Initialize options flow."""
-        self.config_entry = config_entry
+        self._config_entry = config_entry
+
+    @property
+    def _entry(self) -> config_entries.ConfigEntry:
+        """Return the config entry safely across Home Assistant versions."""
+        if hasattr(self, "config_entry") and self.config_entry is not None:
+            return self.config_entry
+        return self._config_entry
 
     async def async_step_init(
         self, user_input: Optional[Dict[str, Any]] = None
     ) -> FlowResult:
         """Manage the options."""
         if user_input is not None:
-            return self.async_create_entry(title="", data=user_input)
+            return self.async_create_entry(
+                title="",
+                data={
+                    CONF_SCAN_INTERVAL: int(user_input[CONF_SCAN_INTERVAL]),
+                },
+            )
 
-        current_interval = self.config_entry.options.get(
+        current_interval = self._entry.options.get(
             CONF_SCAN_INTERVAL,
-            self.config_entry.data.get(CONF_SCAN_INTERVAL, DEFAULT_SCAN_INTERVAL),
+            self._entry.data.get(CONF_SCAN_INTERVAL, DEFAULT_SCAN_INTERVAL),
         )
 
         schema = vol.Schema(
             {
                 vol.Optional(
                     CONF_SCAN_INTERVAL, default=current_interval
-                ): vol.All(vol.Coerce(int), vol.Range(min=MIN_SCAN_INTERVAL, max=MAX_SCAN_INTERVAL)),
+                ): NumberSelector(
+                    NumberSelectorConfig(
+                        min=MIN_SCAN_INTERVAL,
+                        max=MAX_SCAN_INTERVAL,
+                        step=1,
+                        unit_of_measurement="seconds",
+                        mode=NumberSelectorMode.BOX,
+                    )
+                ),
             }
         )
 
