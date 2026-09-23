@@ -1,0 +1,9 @@
+{
+  "host": "127.0.0.1",
+  "port": 19150,
+  "password": "",
+  "interval_ms": 1000,
+  "mqtt_broker": "127.0.0.1",
+  "mqtt_port": 1883,
+  "mqtt_topic": "rsm"
+}

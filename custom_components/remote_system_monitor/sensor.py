@@ -1,0 +1,218 @@
+"""Sensor platform for Remote System Monitor."""
+
+from __future__ import annotations
+
+import logging
+from typing import Any, Dict, List, Optional
+
+from homeassistant.components.sensor import (
+    SensorDeviceClass,
+    SensorEntity,
+    SensorStateClass,
+)
+from homeassistant.config_entries import ConfigEntry
+from homeassistant.const import (
+    PERCENTAGE,
+    UnitOfDataRate,
+    UnitOfElectricCurrent,
+    UnitOfElectricPotential,
+    UnitOfEnergy,
+    UnitOfFrequency,
+    UnitOfInformation,
+    UnitOfPower,
+    UnitOfTemperature,
+    UnitOfVolumeFlowRate,
+)
+from homeassistant.core import HomeAssistant, callback
+from homeassistant.helpers.device_registry import DeviceInfo
+from homeassistant.helpers.entity_platform import AddEntitiesCallback
+from homeassistant.helpers.update_coordinator import CoordinatorEntity
+
+from .const import DEFAULT_MODEL, DOMAIN, MANUFACTURER
+from .coordinator import RSMDataUpdateCoordinator
+from .rsm_protocol import HardwareItem, HardwareType, SensorItem, SensorType
+
+_LOGGER = logging.getLogger(__name__)
+
+# Map SensorType to (device_class, state_class, unit)
+SENSOR_TYPE_MAPPINGS: Dict[SensorType, tuple[Optional[SensorDeviceClass], Optional[SensorStateClass], Optional[str]]] = {
+    SensorType.TEMPERATURE: (SensorDeviceClass.TEMPERATURE, SensorStateClass.MEASUREMENT, UnitOfTemperature.CELSIUS),
+    SensorType.VOLTAGE: (SensorDeviceClass.VOLTAGE, SensorStateClass.MEASUREMENT, UnitOfElectricPotential.VOLT),
+    SensorType.CURRENT: (SensorDeviceClass.CURRENT, SensorStateClass.MEASUREMENT, UnitOfElectricCurrent.AMPERE),
+    SensorType.POWER: (SensorDeviceClass.POWER, SensorStateClass.MEASUREMENT, UnitOfPower.WATT),
+    SensorType.ENERGY: (SensorDeviceClass.ENERGY, SensorStateClass.TOTAL, UnitOfEnergy.WATT_HOUR),
+    SensorType.CLOCK: (SensorDeviceClass.FREQUENCY, SensorStateClass.MEASUREMENT, UnitOfFrequency.MEGAHERTZ),
+    SensorType.FREQUENCY: (SensorDeviceClass.FREQUENCY, SensorStateClass.MEASUREMENT, UnitOfFrequency.HERTZ),
+    SensorType.FAN: (None, SensorStateClass.MEASUREMENT, "RPM"),
+    SensorType.FLOW: (None, SensorStateClass.MEASUREMENT, "L/h"),
+    SensorType.LOAD: (None, SensorStateClass.MEASUREMENT, PERCENTAGE),
+    SensorType.CONTROL: (None, SensorStateClass.MEASUREMENT, PERCENTAGE),
+    SensorType.LEVEL: (None, SensorStateClass.MEASUREMENT, PERCENTAGE),
+    SensorType.HUMIDITY: (SensorDeviceClass.HUMIDITY, SensorStateClass.MEASUREMENT, PERCENTAGE),
+    SensorType.DATA: (SensorDeviceClass.DATA_SIZE, SensorStateClass.MEASUREMENT, UnitOfInformation.GIGABYTES),
+    SensorType.SMALLDATA: (SensorDeviceClass.DATA_SIZE, SensorStateClass.MEASUREMENT, UnitOfInformation.MEGABYTES),
+    SensorType.PROCESS_RAM: (SensorDeviceClass.DATA_SIZE, SensorStateClass.MEASUREMENT, UnitOfInformation.MEGABYTES),
+    SensorType.THROUGHPUT: (SensorDeviceClass.DATA_RATE, SensorStateClass.MEASUREMENT, "KB/s"),
+    SensorType.NETWORK_DOWNLOAD: (SensorDeviceClass.DATA_RATE, SensorStateClass.MEASUREMENT, "KB/s"),
+    SensorType.NETWORK_UPLOAD: (SensorDeviceClass.DATA_RATE, SensorStateClass.MEASUREMENT, "KB/s"),
+    SensorType.BATTERY_LIFE_PERCENT: (SensorDeviceClass.BATTERY, SensorStateClass.MEASUREMENT, PERCENTAGE),
+    SensorType.PROCESS_CPU: (None, SensorStateClass.MEASUREMENT, PERCENTAGE),
+    SensorType.HDD_IO_PERCENT: (None, SensorStateClass.MEASUREMENT, PERCENTAGE),
+    SensorType.FRAME_RATE: (None, SensorStateClass.MEASUREMENT, "FPS"),
+    SensorType.STRING: (None, None, None),
+    SensorType.NAMED_STRING: (None, None, None),
+    SensorType.HDD_SMART_STATUS: (None, None, None),
+    SensorType.PROCESS_NAME: (None, None, None),
+}
+
+
+async def async_setup_entry(
+    hass: HomeAssistant,
+    entry: ConfigEntry,
+    async_add_entities: AddEntitiesCallback,
+) -> None:
+    """Set up Remote System Monitor sensors based on a config entry."""
+    coordinator: RSMDataUpdateCoordinator = hass.data[DOMAIN][entry.entry_id]
+
+    created_sensors: set[str] = set()
+
+    @callback
+    def add_sensors_for_identifiers(identifiers: List[str]) -> None:
+        """Helper to create and register sensor entities."""
+        entities: List[RSMSensorEntity] = []
+        snapshot = coordinator.data
+        if not snapshot:
+            return
+
+        for ident in identifiers:
+            if ident in created_sensors:
+                continue
+            sensor_item = snapshot.sensors_by_identifier.get(ident)
+            if not sensor_item:
+                continue
+
+            created_sensors.add(ident)
+            entities.append(RSMSensorEntity(coordinator, ident))
+
+        if entities:
+            async_add_entities(entities)
+
+    # Initial batch of sensors
+    if coordinator.data and coordinator.data.sensors_by_identifier:
+        add_sensors_for_identifiers(list(coordinator.data.sensors_by_identifier.keys()))
+
+    # Listen for new sensors dynamically discovered during runtime
+    entry.async_on_unload(coordinator.register_new_sensors_callback(add_sensors_for_identifiers))
+
+
+class RSMSensorEntity(CoordinatorEntity[RSMDataUpdateCoordinator], SensorEntity):
+    """Representation of a Remote System Monitor sensor."""
+
+    _attr_has_entity_name = True
+
+    def __init__(self, coordinator: RSMDataUpdateCoordinator, sensor_identifier: str) -> None:
+        """Initialize the sensor."""
+        super().__init__(coordinator)
+        self.sensor_identifier = sensor_identifier
+        self._attr_unique_id = f"{coordinator.server_uid}_{sensor_identifier}"
+
+        # Initial metadata setup
+        self._update_metadata()
+
+    def _update_metadata(self) -> None:
+        """Update sensor attributes and device registry information."""
+        snapshot = self.coordinator.data
+        if not snapshot:
+            return
+
+        sensor_item: Optional[SensorItem] = snapshot.sensors_by_identifier.get(self.sensor_identifier)
+        if not sensor_item:
+            return
+
+        # Resolve sensor name
+        s_name = sensor_item.name
+        if not s_name:
+            if "/osversion" in sensor_item.identifier:
+                s_name = "OS Version"
+            elif "/mainboard" in sensor_item.identifier or "/motherboard" in sensor_item.identifier:
+                s_name = "BIOS Version"
+            else:
+                s_name = sensor_item.identifier.strip("/").split("/")[-1].replace("_", " ").title()
+
+        self._attr_name = s_name
+
+        # Mapping classes and units
+        mapping = SENSOR_TYPE_MAPPINGS.get(sensor_item.sensor_type)
+        if mapping:
+            device_class, state_class, unit = mapping
+            self._attr_device_class = device_class
+            self._attr_state_class = state_class
+            self._attr_native_unit_of_measurement = unit
+        else:
+            self._attr_device_class = None
+            self._attr_state_class = None
+            self._attr_native_unit_of_measurement = sensor_item.sensor_type.unit or None
+
+        # Build hierarchical device info
+        root_hw: Optional[HardwareItem] = snapshot.get_root_hardware(sensor_item.parent)
+        parent_hw: Optional[HardwareItem] = snapshot.hardware.get(sensor_item.parent)
+
+        if root_hw and root_hw.identifier not in ("/computer", "", None):
+            # Sub-device (CPU, GPU, RAM, Motherboard, Disk, etc.)
+            self._attr_device_info = DeviceInfo(
+                identifiers={(DOMAIN, f"{self.coordinator.server_uid}_{root_hw.identifier}")},
+                name=root_hw.name,
+                manufacturer=MANUFACTURER,
+                model=root_hw.hardware_type.name.replace("_", " ").title(),
+                via_device=(DOMAIN, self.coordinator.server_uid),
+            )
+        else:
+            # Root Computer Device
+            self._attr_device_info = DeviceInfo(
+                identifiers={(DOMAIN, self.coordinator.server_uid)},
+                name=self.coordinator.computer_name,
+                manufacturer=MANUFACTURER,
+                model=DEFAULT_MODEL,
+                sw_version=f"Protocol {self.coordinator.client.server_version}",
+            )
+
+    @property
+    def native_value(self) -> Any:
+        """Return the current sensor value."""
+        if not self.coordinator.data:
+            return None
+        sensor_item = self.coordinator.data.sensors_by_identifier.get(self.sensor_identifier)
+        if not sensor_item:
+            return None
+        return sensor_item.value
+
+    @property
+    def available(self) -> bool:
+        """Return True if coordinator is successful and sensor is in current snapshot."""
+        return (
+            super().available
+            and self.coordinator.data is not None
+            and self.sensor_identifier in self.coordinator.data.sensors_by_identifier
+        )
+
+    @property
+    def extra_state_attributes(self) -> Dict[str, Any]:
+        """Return additional diagnostic attributes."""
+        attrs: Dict[str, Any] = {
+            "sensor_identifier": self.sensor_identifier,
+        }
+        if self.coordinator.data:
+            sensor_item = self.coordinator.data.sensors_by_identifier.get(self.sensor_identifier)
+            if sensor_item:
+                attrs["sensor_type"] = sensor_item.sensor_type.name
+                parent_hw = self.coordinator.data.hardware.get(sensor_item.parent)
+                if parent_hw:
+                    attrs["hardware_name"] = parent_hw.name
+                    attrs["hardware_type"] = parent_hw.hardware_type.name
+        return attrs
+
+    @callback
+    def _handle_coordinator_update(self) -> None:
+        """Handle updated data from the coordinator."""
+        self._update_metadata()
+        self.async_write_ha_state()

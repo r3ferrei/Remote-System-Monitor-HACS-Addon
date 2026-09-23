@@ -1,0 +1,35 @@
+{
+  "config": {
+    "step": {
+      "user": {
+        "title": "Connect to Remote System Monitor",
+        "description": "Enter the connection details for your TRIGONE Remote System Monitor Server.",
+        "data": {
+          "host": "Host / IP Address",
+          "port": "Port",
+          "password": "Password",
+          "scan_interval": "Polling Interval (seconds)"
+        }
+      }
+    },
+    "error": {
+      "cannot_connect": "Failed to connect to the Remote System Monitor server over TLS. Check the IP, port, and ensure the server is running.",
+      "invalid_auth": "Authentication failed. Check the password configured in your Remote System Monitor Control Panel.",
+      "unknown": "An unexpected error occurred."
+    },
+    "abort": {
+      "already_configured": "This Remote System Monitor server is already configured."
+    }
+  },
+  "options": {
+    "step": {
+      "init": {
+        "title": "Configure Polling Rate",
+        "description": "Adjust the telemetry polling rate for Remote System Monitor.",
+        "data": {
+          "scan_interval": "Polling Interval (seconds)"
+        }
+      }
+    }
+  }
+}

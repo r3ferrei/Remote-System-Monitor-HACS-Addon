@@ -1,0 +1,14 @@
+{
+  "domain": "remote_system_monitor",
+  "name": "Remote System Monitor",
+  "codeowners": [
+    "@r3ferrei"
+  ],
+  "config_flow": true,
+  "documentation": "https://github.com/r3ferrei/Remote-System-Monitor-HACS-Addon",
+  "integration_type": "hub",
+  "iot_class": "local_polling",
+  "issue_tracker": "https://github.com/r3ferrei/Remote-System-Monitor-HACS-Addon/issues",
+  "requirements": [],
+  "version": "1.0.0"
+}
