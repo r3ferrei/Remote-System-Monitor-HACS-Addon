@@ -70,6 +70,8 @@ class RSMDataUpdateCoordinator(DataUpdateCoordinator[TelemetrySnapshot]):
     def register_new_sensors_callback(self, callback: Callable[[List[str]], None]) -> Callable[[], None]:
         """Register callback invoked when new sensors are discovered dynamically."""
         self._new_sensors_callbacks.append(callback)
+        if self.known_sensor_identifiers:
+            callback(list(self.known_sensor_identifiers))
 
         def unsubscribe() -> None:
             if callback in self._new_sensors_callbacks:
@@ -92,17 +94,7 @@ class RSMDataUpdateCoordinator(DataUpdateCoordinator[TelemetrySnapshot]):
                 _LOGGER.info("Connected and authenticated to Remote System Monitor (%s)", self.client.server_uid)
 
             self.client.request_update()
-            snapshot = self.client.read_telemetry_packet()
-
-            # Detect dynamically discovered sensors
-            current_idents = set(snapshot.sensors_by_identifier.keys())
-            new_idents = list(current_idents - self.known_sensor_identifiers)
-            if new_idents:
-                self.known_sensor_identifiers.update(new_idents)
-                # Dispatch notification to any registered callbacks
-                self.hass.loop.call_soon_threadsafe(self._dispatch_new_sensors, new_idents)
-
-            return snapshot
+            return self.client.read_telemetry_packet()
 
         except RSMAuthError as err:
             self.client.close()
@@ -122,8 +114,20 @@ class RSMDataUpdateCoordinator(DataUpdateCoordinator[TelemetrySnapshot]):
 
     async def _async_update_data(self) -> TelemetrySnapshot:
         """Asynchronously fetch data by running the sync routine in executor."""
-        return await self.hass.async_add_executor_job(self._update_data_sync)
+        snapshot = await self.hass.async_add_executor_job(self._update_data_sync)
+
+        # Detect dynamically discovered sensors
+        current_idents = set(snapshot.sensors_by_identifier.keys())
+        new_idents = list(current_idents - self.known_sensor_identifiers)
+        if new_idents:
+            # Update data first so callbacks can inspect the new snapshot immediately
+            self.data = snapshot
+            self.known_sensor_identifiers.update(new_idents)
+            self._dispatch_new_sensors(new_idents)
+
+        return snapshot
 
     async def async_shutdown(self) -> None:
         """Close connection cleanly on coordinator shutdown / integration unload."""
         await self.hass.async_add_executor_job(self.client.close)
+
