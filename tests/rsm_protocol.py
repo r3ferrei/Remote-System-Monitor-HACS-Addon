@@ -102,7 +102,7 @@ class SensorType(IntEnum):
             SensorType.POWER: "W",
             SensorType.DATA: "GB",
             SensorType.SMALLDATA: "MB",
-            SensorType.THROUGHPUT: "KB/s",
+            SensorType.THROUGHPUT: "KiB/s",
             SensorType.CURRENT: "A",
             SensorType.ENERGY: "Wh",
             SensorType.HUMIDITY: "%",
@@ -110,10 +110,26 @@ class SensorType(IntEnum):
             SensorType.PROCESS_RAM: "MB",
             SensorType.PROCESS_CPU: "%",
             SensorType.FRAME_RATE: "FPS",
-            SensorType.NETWORK_DOWNLOAD: "KB/s",
-            SensorType.NETWORK_UPLOAD: "KB/s",
+            SensorType.NETWORK_DOWNLOAD: "KiB/s",
+            SensorType.NETWORK_UPLOAD: "KiB/s",
         }
         return units.get(self, "")
+
+
+PHYSICAL_HARDWARE_TYPES = frozenset(
+    {
+        HardwareType.HDD,
+        HardwareType.CPU,
+        HardwareType.GPUNVIDIA,
+        HardwareType.GPUATI,
+        HardwareType.GPUINTEL,
+        HardwareType.RAM,
+        HardwareType.DIMM,
+        HardwareType.SUPERIO,
+        HardwareType.COOLER,
+        HardwareType.PSU,
+    }
+)
 
 
 class CommandType(IntEnum):
@@ -151,40 +167,38 @@ class TelemetrySnapshot:
     hardware: Dict[str, HardwareItem] = field(default_factory=dict)
     sensors: Dict[int, SensorItem] = field(default_factory=dict)
     sensors_by_identifier: Dict[str, SensorItem] = field(default_factory=dict)
+    _root_cache: Dict[str, Optional[HardwareItem]] = field(default_factory=dict, init=False, repr=False)
 
     def get_root_hardware(self, parent_id: str) -> Optional[HardwareItem]:
         """
         Traverses upward from sub-hardware containers (such as SMART data, disk I/O, etc.)
         to resolve the parent physical device (e.g. Hard Drive, CPU, GPU).
+        Results are cached to avoid repeated tree traversals.
         """
+        if not parent_id:
+            return None
+
+        if parent_id in self._root_cache:
+            return self._root_cache[parent_id]
+
         current = parent_id
         visited = set()
         candidate = self.hardware.get(parent_id)
-
-        physical_types = {
-            HardwareType.HDD,
-            HardwareType.CPU,
-            HardwareType.GPUNVIDIA,
-            HardwareType.GPUATI,
-            HardwareType.GPUINTEL,
-            HardwareType.RAM,
-            HardwareType.DIMM,
-            HardwareType.SUPERIO,
-            HardwareType.COOLER,
-            HardwareType.PSU,
-        }
 
         while current and current != "/computer" and current not in visited:
             visited.add(current)
             hw = self.hardware.get(current)
             if not hw:
                 break
-            if hw.hardware_type in physical_types:
-                return hw
+            if hw.hardware_type in PHYSICAL_HARDWARE_TYPES:
+                candidate = hw
+                break
             if hw.parent in ("/computer", "", None):
                 candidate = hw
                 break
             current = hw.parent
+
+        self._root_cache[parent_id] = candidate
         return candidate
 
     def to_dict(self) -> Dict[str, Any]:

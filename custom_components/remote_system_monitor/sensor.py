@@ -52,9 +52,9 @@ SENSOR_TYPE_MAPPINGS: Dict[SensorType, tuple[Optional[SensorDeviceClass], Option
     SensorType.DATA: (SensorDeviceClass.DATA_SIZE, SensorStateClass.MEASUREMENT, UnitOfInformation.GIGABYTES),
     SensorType.SMALLDATA: (SensorDeviceClass.DATA_SIZE, SensorStateClass.MEASUREMENT, UnitOfInformation.MEGABYTES),
     SensorType.PROCESS_RAM: (SensorDeviceClass.DATA_SIZE, SensorStateClass.MEASUREMENT, UnitOfInformation.MEGABYTES),
-    SensorType.THROUGHPUT: (SensorDeviceClass.DATA_RATE, SensorStateClass.MEASUREMENT, "KB/s"),
-    SensorType.NETWORK_DOWNLOAD: (SensorDeviceClass.DATA_RATE, SensorStateClass.MEASUREMENT, "KB/s"),
-    SensorType.NETWORK_UPLOAD: (SensorDeviceClass.DATA_RATE, SensorStateClass.MEASUREMENT, "KB/s"),
+    SensorType.THROUGHPUT: (SensorDeviceClass.DATA_RATE, SensorStateClass.MEASUREMENT, UnitOfDataRate.KIBIBYTES_PER_SECOND),
+    SensorType.NETWORK_DOWNLOAD: (SensorDeviceClass.DATA_RATE, SensorStateClass.MEASUREMENT, UnitOfDataRate.KIBIBYTES_PER_SECOND),
+    SensorType.NETWORK_UPLOAD: (SensorDeviceClass.DATA_RATE, SensorStateClass.MEASUREMENT, UnitOfDataRate.KIBIBYTES_PER_SECOND),
     SensorType.BATTERY_LIFE_PERCENT: (SensorDeviceClass.BATTERY, SensorStateClass.MEASUREMENT, PERCENTAGE),
     SensorType.PROCESS_CPU: (None, SensorStateClass.MEASUREMENT, PERCENTAGE),
     SensorType.HDD_IO_PERCENT: (None, SensorStateClass.MEASUREMENT, PERCENTAGE),
@@ -115,12 +115,16 @@ class RSMSensorEntity(CoordinatorEntity[RSMDataUpdateCoordinator], SensorEntity)
         super().__init__(coordinator)
         self.sensor_identifier = sensor_identifier
         self._attr_unique_id = f"{coordinator.server_uid}_{sensor_identifier}"
+        self._metadata_initialized: bool = False
 
         # Initial metadata setup
         self._update_metadata()
 
     def _update_metadata(self) -> None:
-        """Update sensor attributes and device registry information."""
+        """Update sensor attributes and device registry information once."""
+        if self._metadata_initialized:
+            return
+
         snapshot = self.coordinator.data
         if not snapshot:
             return
@@ -176,6 +180,18 @@ class RSMSensorEntity(CoordinatorEntity[RSMDataUpdateCoordinator], SensorEntity)
                 sw_version=f"Protocol {self.coordinator.client.server_version}",
             )
 
+        # Pre-compute static diagnostic attributes once
+        attrs: Dict[str, Any] = {
+            "sensor_identifier": self.sensor_identifier,
+            "sensor_type": sensor_item.sensor_type.name,
+        }
+        if parent_hw:
+            attrs["hardware_name"] = parent_hw.name
+            attrs["hardware_type"] = parent_hw.hardware_type.name
+        self._attr_extra_state_attributes = attrs
+
+        self._metadata_initialized = True
+
     @property
     def native_value(self) -> Any:
         """Return the current sensor value."""
@@ -195,24 +211,9 @@ class RSMSensorEntity(CoordinatorEntity[RSMDataUpdateCoordinator], SensorEntity)
             and self.sensor_identifier in self.coordinator.data.sensors_by_identifier
         )
 
-    @property
-    def extra_state_attributes(self) -> Dict[str, Any]:
-        """Return additional diagnostic attributes."""
-        attrs: Dict[str, Any] = {
-            "sensor_identifier": self.sensor_identifier,
-        }
-        if self.coordinator.data:
-            sensor_item = self.coordinator.data.sensors_by_identifier.get(self.sensor_identifier)
-            if sensor_item:
-                attrs["sensor_type"] = sensor_item.sensor_type.name
-                parent_hw = self.coordinator.data.hardware.get(sensor_item.parent)
-                if parent_hw:
-                    attrs["hardware_name"] = parent_hw.name
-                    attrs["hardware_type"] = parent_hw.hardware_type.name
-        return attrs
-
     @callback
     def _handle_coordinator_update(self) -> None:
         """Handle updated data from the coordinator."""
-        self._update_metadata()
+        if not self._metadata_initialized:
+            self._update_metadata()
         self.async_write_ha_state()
